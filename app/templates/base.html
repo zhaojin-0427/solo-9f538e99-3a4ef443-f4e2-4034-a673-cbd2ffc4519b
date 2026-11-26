@@ -19,6 +19,7 @@
     <nav class="topnav">
       <a href="#map">总图</a>
       <a href="#submit">新对位</a>
+      <a href="{{ url_for('index') }}#review">复核批次</a>
       <a href="#alignments">对位台账</a>
       <a href="#cracks">裂缝台账</a>
       <a href="#history">处理记录</a>
@@ -36,5 +37,7 @@
 
 <script id="demo-data" type="application/json">{{ state.demos | tojson }}</script>
 <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+<script src="{{ url_for('static', filename='review.js') }}" defer></script>
+{% block extra_scripts %}{% endblock %}
 </body>
 </html>

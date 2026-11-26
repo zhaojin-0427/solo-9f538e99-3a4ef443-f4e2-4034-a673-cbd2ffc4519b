@@ -168,6 +168,10 @@ def submit_alignment(db, data: Dict[str, Any]) -> Dict[str, Any]:
             "UPDATE images SET tx=?, ty=? WHERE id=?", (tx, ty, img_id)
         )
 
+    # 对位版本 +1：同一事务内令进行中批次的未提交项过期（已确认项保留）
+    from .review import on_alignment_applied
+    review_change = on_alignment_applied(db)
+
     # 新对位记为已复核
     ncur = db.execute(
         """INSERT INTO alignments
@@ -204,6 +208,8 @@ def submit_alignment(db, data: Dict[str, Any]) -> Dict[str, Any]:
                          for k, v in outcome.translations.items()},
         "tried_candidates": outcome.tried_candidates,
         "feasible_candidates": outcome.feasible_candidates,
+        "alignment_version": review_change["version"],
+        "review_expired": review_change["expired"],
     }
     n_rm = len(removed_snapshot)
     n_sh = len(shifted)
@@ -290,9 +296,18 @@ def load_state(db) -> Dict[str, Any]:
         "alignment_marks": alignment_marks,
         "cracks": cracks,
         "runs": list_runs(db),
+        "alignment_version": _current_alignment_version(db),
         "demos": {
             "solvable": DEMO_SOLVABLE,
             "no_solution": DEMO_NO_SOLUTION,
         },
         "max_remove": MAX_REMOVE,
     }
+
+
+def _current_alignment_version(db) -> int:
+    from .db import get_meta
+    try:
+        return max(1, int((get_meta(db, "alignment_version", "1") or "1")))
+    except (TypeError, ValueError):
+        return 1

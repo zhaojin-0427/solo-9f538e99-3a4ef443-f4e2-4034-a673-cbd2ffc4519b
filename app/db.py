@@ -65,6 +65,64 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_align_status ON alignments(status);
 CREATE INDEX IF NOT EXISTS idx_cracks_image ON cracks(image_id);
+
+-- 全局元信息：对位版本号。每次“有解并应用”的对位更新 +1。
+CREATE TABLE IF NOT EXISTS app_meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+);
+
+-- 现场复核批次：开始时记录对位版本。
+CREATE TABLE IF NOT EXISTS review_batches (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_no          TEXT UNIQUE,             -- 批次号 PC-0001 ...
+    alignment_version INTEGER NOT NULL,        -- 开始时的对位版本
+    note              TEXT,
+    status            TEXT NOT NULL DEFAULT 'open', -- open（进行中；按条目派生进度）
+    created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- 批次内的每条裂缝：批次快照总图坐标 + 复核状态机。
+-- 一个批次中同一条裂缝只有一行（重复提交只保留这一次确认）。
+CREATE TABLE IF NOT EXISTS review_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id        INTEGER NOT NULL REFERENCES review_batches(id),
+    crack_id        TEXT NOT NULL REFERENCES cracks(id),
+    crack_code      TEXT NOT NULL,
+    snap_x          REAL NOT NULL,             -- 开始/重开时的总图快照坐标
+    snap_y          REAL NOT NULL,
+    snap_version    INTEGER NOT NULL,          -- 快照对应的对位版本
+    status          TEXT NOT NULL DEFAULT 'pending', -- pending 待复核 / confirmed 已确认 / expired 已过期
+    field_x         REAL,                      -- 首次确认的现场坐标（历史保留，不被覆盖）
+    field_y         REAL,
+    deviation       REAL,                      -- 确认时与快照的像素偏差
+    round_no        INTEGER NOT NULL DEFAULT 1,-- 重开一次 +1，用于区分新一轮的拒绝原因
+    confirmed_at    TEXT,
+    expired_at      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at      TEXT,
+    UNIQUE(batch_id, crack_id)
+);
+
+-- 提交/拒绝审计流水：无效提交只允许追加本表，不得改动 review_items 状态。
+CREATE TABLE IF NOT EXISTS review_submissions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id      INTEGER NOT NULL REFERENCES review_batches(id),
+    item_id       INTEGER NOT NULL REFERENCES review_items(id),
+    crack_code    TEXT NOT NULL,
+    round_no      INTEGER NOT NULL DEFAULT 1,
+    field_x       REAL,
+    field_y       REAL,
+    deviation     REAL,
+    accepted      INTEGER NOT NULL DEFAULT 0,  -- 0 拒绝（本表现阶段只记拒绝）
+    reason_code   TEXT,                        -- too_far / expired / ...
+    reason        TEXT,                        -- 页面展示的中文拒绝原因
+    created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_items_batch ON review_items(batch_id);
+CREATE INDEX IF NOT EXISTS idx_review_items_status ON review_items(status);
+CREATE INDEX IF NOT EXISTS idx_review_sub_item ON review_submissions(item_id);
 """
 
 
@@ -105,12 +163,35 @@ def init_db(db_path: str | os.PathLike | None = None) -> Path:
     db = sqlite3.connect(str(path), timeout=10)
     try:
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys = ON")
         db.executescript(SCHEMA)
+        # 对位版本初始值：新库为 v1；从旧版本升级的库按“已应用的对位更新次数”
+        # 推断一个不回退的版本号，避免已有复核批次被误判为全部过期。
+        db.execute(
+            """
+            INSERT OR IGNORE INTO app_meta(key, value)
+            SELECT 'alignment_version', CAST(1 + COUNT(*) AS TEXT)
+            FROM runs WHERE status = 'applied'
+            """
+        )
         db.commit()
         seed_if_empty(db)
     finally:
         db.close()
     return path
+
+
+def get_meta(db: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = db.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_meta(db: sqlite3.Connection, key: str, value) -> None:
+    db.execute(
+        """INSERT INTO app_meta(key, value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (key, str(value)),
+    )
 
 
 def init_app(app):

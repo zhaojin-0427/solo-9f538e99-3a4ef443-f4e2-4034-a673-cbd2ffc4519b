@@ -225,9 +225,21 @@ def seed_if_empty(db):
 
 def reset_all(db):
     """清空业务数据并重新写入内置样片。"""
-    for table in ("runs", "alignments", "cracks", "images"):
+    # 先删复核子表/父表，再删对位等表（子表在前）
+    for table in (
+        "review_submissions", "review_items", "review_batches",
+        "runs", "alignments", "cracks", "images",
+    ):
         db.execute(f"DELETE FROM {table}")
-    # 复位自增 id，让演示对位编号保持稳定
-    db.execute("DELETE FROM sqlite_sequence WHERE name IN ('runs','alignments')")
+    # 复位自增 id，让演示对位/批次编号保持稳定
+    db.execute(
+        "DELETE FROM sqlite_sequence WHERE name IN "
+        "('runs','alignments','review_batches','review_items','review_submissions')"
+    )
+    # 几何恢复成种子旧总图，对位版本也回到 v1
+    db.execute(
+        "INSERT INTO app_meta(key, value) VALUES('alignment_version','1') "
+        "ON CONFLICT(key) DO UPDATE SET value='1'"
+    )
     db.commit()
     return seed_if_empty(db)
